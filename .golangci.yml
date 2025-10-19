@@ -1,0 +1,25 @@
+run:
+  timeout: 2m
+  tests: true
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - gofmt
+    - goimports
+    - unused
+    - ineffassign
+    - errcheck
+    - gosimple
+    - typecheck
+  disable:
+    - depguard  # disables external import restriction
+
+issues:
+  exclude-use-default: false
+  max-same-issues: 5
+  max-issues-per-linter: 50
+
+output:
+  sort-results: true
