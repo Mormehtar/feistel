@@ -36,10 +36,7 @@ If you wanted to use it to do load balancing you could write something like this
 ```
 
 import (
-        "encoding/binary"
-        "fmt"
         "sync/atomic"
-        "crypto/rand"
 
         "github.com/elacy/feistel"
 )
