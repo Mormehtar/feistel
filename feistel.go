@@ -1,7 +1,10 @@
+// Package feistel is a non cryptographic implementation of the feistel cipher
+// It's useful for creating random permutations of ranges of integers from 0 to n
 package feistel
 
 import (
 	"errors"
+	"fmt"
 	"math"
 )
 
@@ -11,18 +14,32 @@ var ErrIndexGreatThanMaxValue = errors.New("feistel: index cannot be greater tha
 // ErrRoundsMustBeSet is returned when you have provided a zero value for rounds
 var ErrRoundsMustBeSet = errors.New("feistel: rounds must be a non zero value")
 
-type Option func(*FeistelNetwork)
+// Option is a function
+type Option func(*Network)
 
+// WithEpochs is an option that allows you to create multiple permutations with the same seed
+// instead of providing an error when you exceed max value it will start a new sequence each time
+// you cross a multiple of max value + 1. The mapped value will have the number at the start of the
+// sequence added to it to maintain invertibility. For example with a max value of 9 there are 10 options
+// so 9 is in the first sequence, 10 is the first index of the second sequence (or epoch), 21 is in the third
+// sequence. If in the second sequence 0 maps to 9, then 10 will return 19. That way if you provide the 19 value
+// we know we should consider it the second sequence (or epoch).
 func WithEpochs() Option {
-	return func(m *FeistelNetwork) {
+	return func(m *Network) {
 		m.epochs = true
 	}
 }
 
-func NewNetwork(maxValue, seed uint64, rounds uint8, opts ...Option) (*FeistelNetwork, error) {
+// NewNetwork creates a new Feistel Network, keep in mind this function runs multiple hash functions to generate seeds
+// maxValue is the maximum value in the sequence that the Feistel Network will create permutations for
+// seed is a hash seed, by providing a different value this will return different permutations of the sequence
+// rounds is the number of hash rounds the network will run to generate each value, the more rounds you run the
+// better the distribution but it also adds time to running the function
+// opts is a list of all the optional parameters you can add, right now that only includes WithEpochs()
+func NewNetwork(maxValue, seed uint64, rounds uint8, opts ...Option) (*Network, error) {
 	l, r := findFactors(maxValue)
 
-	network := &FeistelNetwork{
+	network := &Network{
 		maxValue:   maxValue,
 		rounds:     int(rounds),
 		leftRadix:  l,
@@ -40,7 +57,7 @@ func NewNetwork(maxValue, seed uint64, rounds uint8, opts ...Option) (*FeistelNe
 	network.seeds = make([]uint64, network.rounds)
 
 	currentSeed := seed
-	for i := range uint64(len(network.seeds)) {
+	for i := range network.seeds {
 		currentSeed = splitmix64(currentSeed)
 		network.seeds[i] = currentSeed
 	}
@@ -48,7 +65,8 @@ func NewNetwork(maxValue, seed uint64, rounds uint8, opts ...Option) (*FeistelNe
 	return network, nil
 }
 
-type FeistelNetwork struct {
+// Network is the container information relevant for generating permutations
+type Network struct {
 	rounds   int
 	maxValue uint64
 	epochs   bool
@@ -58,15 +76,17 @@ type FeistelNetwork struct {
 	rightRadix uint64
 }
 
-func (n *FeistelNetwork) Map(index uint64) (uint64, error) {
+// Map takes an index in a sequence and maps it to another index in the same sequence
+func (n *Network) Map(index uint64) (uint64, error) {
 	return n.encode(index, false)
 }
 
-func (n *FeistelNetwork) InvertMap(index uint64) (uint64, error) {
+// InvertMap performs an inversion of Map
+func (n *Network) InvertMap(index uint64) (uint64, error) {
 	return n.encode(index, true)
 }
 
-func (n *FeistelNetwork) encode(index uint64, invert bool) (uint64, error) {
+func (n *Network) encode(index uint64, invert bool) (uint64, error) {
 	var epochStart uint64
 	var epochHash uint64
 	domainSize := n.maxValue + 1
@@ -77,7 +97,7 @@ func (n *FeistelNetwork) encode(index uint64, invert bool) (uint64, error) {
 			epochHash = splitmix64(epochStart)
 			index %= domainSize
 		} else {
-			return 0, ErrIndexGreatThanMaxValue
+			return 0, fmt.Errorf("%w, index: %d, maxSize: %d", ErrIndexGreatThanMaxValue, index, n.maxValue)
 		}
 	}
 

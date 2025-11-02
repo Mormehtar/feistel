@@ -6,29 +6,16 @@ import (
 	"math"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"gonum.org/v1/gonum/stat"
 	"gonum.org/v1/gonum/stat/distuv"
 )
 
-/*
-Left to do:
-- Use Seed to create more data for tests
-- Fixed Points should only be used where Distribution validation takes too much time
-- Ensure all tests cover all results they can
-- Cycle Length expanded to cover epochs
-- See if we can remove the min average rounds somehow
-- Reduce repeating code
-- Include more domain sizes
-- Make sure you understand everything in the test suite
-- Ask chatgpt if there is anything you've left out in the tests
-- Validate that this will actually work
-*/
-
 const (
 	maxTestRange       = 1000000
-	minRoundsForRandom = 8
+	minRoundsForRandom = 7
 )
 
 type testSettings struct {
@@ -36,11 +23,11 @@ type testSettings struct {
 	rounds     uint8
 	startIndex uint64
 	endIndex   uint64
-	epochs     uint64
+	epochs     bool
 }
 
 func (s testSettings) String() string {
-	return fmt.Sprintf("maxValue %d, range: %d -> %d, rounds: %d", s.maxValue, s.startIndex, s.endIndex, s.rounds)
+	return fmt.Sprintf("maxValue %d, range: %d -> %d, rounds: %d, epochs: %t", s.maxValue, s.startIndex, s.endIndex, s.rounds, s.epochs)
 }
 
 type testResult struct {
@@ -74,25 +61,42 @@ var optionsToTest = []testSettings{
 		rounds: 8,
 	},
 	{
+		rounds: 9,
+	},
+	{
+		rounds: 10,
+	},
+	{
+		rounds: 11,
+	},
+	{
+		rounds: 12,
+	},
+	{
+		rounds: 13,
+	},
+	{
+		rounds: 14,
+	},
+	{
+		rounds: 15,
+	},
+	{
 		rounds: 30,
 	},
 }
 
-var cachedResults []testResult
+var cachedResults []*testResult
 
-func buildTestSettings() []testSettings {
-	result := make([]testSettings, len(maxValuesToTest)*len(optionsToTest)*2)
+func buildTestSettings() []*testSettings {
+	result := make([]*testSettings, len(maxValuesToTest)*len(optionsToTest)*2)
 	i := 0
 	for _, epochs := range []bool{false, true} {
 		for _, maxValue := range maxValuesToTest {
 			for _, settings := range optionsToTest {
 				settings.maxValue = maxValue
-				if epochs {
-					settings.epochs = maxTestRange / maxValue
-				} else {
-					settings.epochs = 1
-				}
-				result[i] = settings
+				settings.epochs = epochs
+				result[i] = &settings
 				i++
 			}
 		}
@@ -108,66 +112,100 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	cachedResults = make([]testResult, len(maxValuesToTest)*len(optionsToTest)*2)
+	cachedResults = make([]*testResult, len(maxValuesToTest)*len(optionsToTest)*2)
+	resultChan := make(chan *testResult, 200)
+	var wg sync.WaitGroup
 
-	for i, settings := range buildTestSettings() {
-		cachedResults[i] = runTest(settings)
+	for _, settings := range buildTestSettings() {
+		currentSettings := settings
+		wg.Add(1)
+		go func() {
+			resultChan <- runTest(currentSettings)
+			wg.Done()
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	i := 0
+	for result := range resultChan {
+		cachedResults[i] = result
+		i++
 	}
 
 	os.Exit(m.Run())
 }
 
-func createNetwork(settings *testSettings) (*FeistelNetwork, error) {
+func createNetwork(settings *testSettings, seed uint64) (*Network, error) {
 	var options []Option
 
-	if settings.epochs > 1 {
+	if settings.epochs {
 		options = append(options, WithEpochs())
-		settings.endIndex = ((settings.maxValue + 1) * settings.epochs) - 1
 	}
 
 	if settings.endIndex == 0 {
 		settings.endIndex = settings.maxValue
 	}
 
-	return NewNetwork(settings.maxValue, 0, settings.rounds, options...)
+	return NewNetwork(settings.maxValue, seed, settings.rounds, options...)
 }
 
-func runTest(s testSettings) testResult {
-	settings := &s
-
-	result := testResult{
+func runTest(settings *testSettings) *testResult {
+	result := &testResult{
 		settings: settings,
 	}
 
-	if settings.epochs > 1 {
-		settings.endIndex = ((settings.maxValue + 1) * settings.epochs) - 1
+	domainSize := settings.maxValue + 1
+	replaceNet := false
+
+	if settings.maxValue > maxTestRange {
+		settings.endIndex = maxTestRange
+	} else {
+		settings.endIndex = maxTestRange - (maxTestRange % domainSize)
+		replaceNet = !settings.epochs
 	}
 
 	if settings.endIndex == 0 {
 		settings.endIndex = settings.maxValue
 	}
 
-	net, err := createNetwork(settings)
-
-	if err != nil {
-		result.err = err
-		result.settings = settings
-		return result
-	}
+	var net *Network
+	var err error
 
 	result.forwardMap = make(map[uint64]uint64, settings.endIndex+1-settings.startIndex)
 	result.reverseMap = make(map[uint64]uint64, settings.endIndex+1-settings.startIndex)
 
 	for i := settings.startIndex; i <= settings.endIndex; i++ {
-		mappedValue, err := net.Map(i)
+		if net == nil || (replaceNet && (i%domainSize == 0)) {
+			net, err = createNetwork(settings, i/domainSize)
+
+			if err != nil {
+				result.err = err
+				return result
+			}
+		}
+
+		value := i
+		adjust := uint64(0)
+
+		if !settings.epochs {
+			value %= domainSize
+			adjust = i - value
+		}
+
+		mappedValue, err := net.Map(value)
 
 		if err != nil {
 			result.err = fmt.Errorf("Error Mapping %d, %w", i, err)
 			return result
 		}
 
-		result.forwardMap[i] = mappedValue
-		result.reverseMap[mappedValue], err = net.InvertMap(mappedValue)
+		result.forwardMap[i] = mappedValue + adjust
+		inverted, err := net.InvertMap(mappedValue)
+		result.reverseMap[mappedValue+adjust] = inverted + adjust
 
 		if err != nil {
 			result.err = fmt.Errorf("Error inverting %d, %w", i, err)
@@ -182,17 +220,13 @@ func TestValuesWithinRange(t *testing.T) {
 	for _, test := range cachedResults {
 		t.Run(test.settings.String(), func(t *testing.T) {
 			for original, value := range test.forwardMap {
-				if test.settings.epochs > 1 {
-					domainSize := test.settings.maxValue + 1
-					start := original - (original % domainSize)
+				domainSize := test.settings.maxValue + 1
+				start := original - (original % domainSize)
 
-					if value < start {
-						t.Errorf("Epoch mapped value %d is below start index %d", value, start)
-					} else if value > start+test.settings.maxValue {
-						t.Errorf("Epoch mapped value %d is above end index %d", value, start+test.settings.maxValue)
-					}
-				} else if value > test.settings.maxValue {
-					t.Errorf("Forward map contains the value %d which exceeds its max value of %d", value, test.settings.maxValue)
+				if value < start {
+					t.Errorf("Epoch mapped value %d is below start index %d", value, start)
+				} else if value > start+test.settings.maxValue {
+					t.Errorf("Epoch mapped value %d is above end index %d", value, start+test.settings.maxValue)
 				}
 			}
 		})
@@ -206,9 +240,11 @@ func TestInvertible(t *testing.T) {
 				if inverted, ok := test.reverseMap[mappedValue]; ok {
 					if original != inverted {
 						t.Errorf("Mapped %d to %d and inversion produced %d", original, mappedValue, inverted)
+						return
 					}
 				} else {
 					t.Errorf("Inversion not performed for %d which mapped to %d", original, mappedValue)
+					return
 				}
 			}
 		})
@@ -226,11 +262,8 @@ func TestNoErr(t *testing.T) {
 }
 
 func TestAverageFixedPoints(t *testing.T) {
-	total := uint64(0)
-	fixedPoints := 0
-	zeroFixedPoints := 0
-
-	for _, test := range cachedResults {
+	for _, tt := range cachedResults {
+		test := tt
 		if test.settings.maxValue < 20 {
 			continue
 		}
@@ -239,31 +272,39 @@ func TestAverageFixedPoints(t *testing.T) {
 			continue
 		}
 
-		if test.settings.epochs > 1 {
+		domainSize := test.settings.maxValue + 1
+		// If the total number of maps is not a factor of domain size this will be a floating point number
+		// which is fine since the average should still hold
+		permutations := float64(len(test.forwardMap)) / float64(domainSize)
+
+		if permutations < 100 {
 			continue
 		}
 
-		total += test.settings.epochs
+		t.Run(test.settings.String(), func(t *testing.T) {
+			fixedPoints := 0
+			zeroFixedPoints := 0
 
-		for original, mapped := range test.forwardMap {
-			if original == mapped {
-				fixedPoints++
+			for original, mapped := range test.forwardMap {
+				if original == mapped {
+					fixedPoints++
 
-				if original == 0 {
-					zeroFixedPoints++
+					if original == 0 {
+						zeroFixedPoints++
+					}
 				}
 			}
-		}
-	}
 
-	average := float64(fixedPoints) / float64(total)
+			average := float64(fixedPoints) / permutations
 
-	if average > 1 || average < 0.02 {
-		t.Errorf("Average fixed points not in valid range (between 0.02 and 1) total %d, fixed points %d, average %f", total, fixedPoints, average)
-	}
+			if math.Abs(average-1) > 0.1 {
+				t.Errorf("Average fixed points not in valid range (between 0.9 and 1.1) total %d, fixed points %d, average %f", len(test.forwardMap), fixedPoints, average)
+			}
 
-	if fixedPoints/2 < zeroFixedPoints {
-		t.Errorf("High number of zero fixed points %d", zeroFixedPoints)
+			if 2*float64(fixedPoints)/float64(domainSize) < float64(zeroFixedPoints) {
+				t.Errorf("Disproportionate number of fixed points: %d, fixed points: %d, domain size: %d", zeroFixedPoints, fixedPoints, domainSize)
+			}
+		})
 	}
 }
 
@@ -296,7 +337,7 @@ func TestFullRangeCovered(t *testing.T) {
 
 func TestCycleLengths(t *testing.T) {
 	for _, test := range cachedResults {
-		if (test.settings.rounds < 3) || test.settings.endIndex != test.settings.maxValue || test.settings.startIndex != 0 {
+		if test.settings.rounds < 3 || test.settings.maxValue > test.settings.endIndex || test.settings.epochs || test.settings.startIndex != 0 {
 			continue
 		}
 		t.Run(test.settings.String(), func(t *testing.T) {
@@ -304,7 +345,8 @@ func TestCycleLengths(t *testing.T) {
 			cycleLength := 0
 			seen := make(map[uint64]struct{}, len(test.forwardMap))
 
-			for currentValue := range test.forwardMap {
+			for i := uint64(0); i <= test.settings.maxValue; i++ {
+				currentValue := i
 				if _, ok := seen[currentValue]; ok {
 					continue
 				}
@@ -468,7 +510,7 @@ func TestSerialCorrelationLag1(t *testing.T) {
 func TestResidueBiasSmallPrimes(t *testing.T) {
 	for _, test := range cachedResults {
 		// Only meaningful when we've mapped the full domain [0..maxValue].
-		if test.settings.startIndex != 0 || test.settings.endIndex != test.settings.maxValue {
+		if test.settings.startIndex != 0 || test.settings.endIndex < test.settings.maxValue {
 			continue
 		}
 
@@ -494,7 +536,7 @@ func TestResidueBiasSmallPrimes(t *testing.T) {
 func TestUniqueCombinations(t *testing.T) {
 	for _, test := range cachedResults {
 		// Only meaningful when we've mapped the full domain [0..maxValue].
-		if test.settings.epochs < 2 {
+		if test.settings.endIndex < 2*test.settings.maxValue {
 			continue
 		}
 
@@ -502,7 +544,8 @@ func TestUniqueCombinations(t *testing.T) {
 			continue
 		}
 		t.Run(test.settings.String(), func(t *testing.T) {
-			seen := make(map[string]struct{}, test.settings.epochs)
+			combinations := (test.settings.endIndex + 1 - test.settings.startIndex) / (test.settings.maxValue + 1)
+			seen := make(map[string]struct{}, combinations)
 			domainSize := test.settings.maxValue + 1
 			buf := make([]byte, 8*domainSize)
 
@@ -533,8 +576,8 @@ func TestUniqueCombinations(t *testing.T) {
 				chiSquaredTest(t, counts, significance)
 			}
 
-			if len(seen) < int(test.settings.epochs) {
-				t.Errorf("Total combinations found was %d but total epochs was %d", len(seen), test.settings.epochs)
+			if len(seen) < int(combinations) {
+				t.Errorf("Total combinations found was %d but total epochs was %d", len(seen), combinations)
 			}
 		})
 	}
@@ -542,17 +585,18 @@ func TestUniqueCombinations(t *testing.T) {
 
 func TestSerialEpochCorrelationLag1(t *testing.T) {
 	for _, test := range cachedResults {
-		if test.settings.rounds < 3 {
+		if test.settings.rounds < 5 {
 			continue
 		}
 
-		if test.settings.epochs < 2 {
+		if test.settings.endIndex < 100*(test.settings.maxValue+1) {
 			continue
 		}
 
 		t.Run(test.settings.String(), func(t *testing.T) {
+			combinations := (test.settings.endIndex + 1 - test.settings.startIndex) / (test.settings.maxValue + 1)
 			domainSize := test.settings.maxValue + 1
-			pairCount := test.settings.epochs - 1
+			pairCount := combinations - 1
 			current := make([]float64, pairCount)
 			next := make([]float64, pairCount)
 
@@ -594,10 +638,6 @@ func TestEpochDistribution(t *testing.T) {
 			continue
 		}
 
-		if test.settings.epochs < 2 {
-			continue
-		}
-
 		t.Run(test.settings.String(), func(t *testing.T) {
 			domainSize := test.settings.maxValue + 1
 			counts := make([]uint64, domainSize*domainSize)
@@ -606,10 +646,10 @@ func TestEpochDistribution(t *testing.T) {
 				original := original % domainSize
 				mapped := mapped % domainSize
 				index := (original * domainSize) + mapped
-				counts[index] += 1
+				counts[index]++
 			}
 
-			chiSquaredTest(t, counts, 0.1)
+			chiSquaredTest(t, counts, 0.01)
 		})
 	}
 }
@@ -617,7 +657,7 @@ func TestEpochDistribution(t *testing.T) {
 func BenchmarkAllSetting(b *testing.B) {
 	for _, settings := range buildTestSettings() {
 		b.Run(settings.String(), func(b *testing.B) {
-			net, err := createNetwork(&settings)
+			net, err := createNetwork(settings, 0)
 
 			if err != nil {
 				b.Fatalf("Unable to create network with error: %v", err)

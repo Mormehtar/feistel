@@ -13,6 +13,7 @@ linters:
     - errcheck
     - gosimple
     - typecheck
+    - revive
   disable:
     - depguard  # disables external import restriction
 
