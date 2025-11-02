@@ -26,55 +26,49 @@ Left to do:
 - Validate that this will actually work
 */
 
-const maxTestRange = 1000000
+const (
+	maxTestRange       = 1000000
+	minRoundsForRandom = 8
+)
 
 type testSettings struct {
-	minAverageRounds uint64
-	maxValue         uint64
-	rounds           uint64
-	startIndex       uint64
-	endIndex         uint64
-	epochs           uint64
+	maxValue   uint64
+	rounds     uint8
+	startIndex uint64
+	endIndex   uint64
+	epochs     uint64
 }
 
 func (s testSettings) String() string {
-	descriptors := []string{
-		fmt.Sprintf("maxValue %d, range: %d -> %d", s.maxValue, s.startIndex, s.endIndex),
-	}
-
-	if s.minAverageRounds > 0 {
-		descriptors = append(descriptors, fmt.Sprintf("minAverageRounds: %d", s.minAverageRounds))
-	} else if s.rounds > 0 {
-		descriptors = append(descriptors, fmt.Sprintf("rounds: %d", s.rounds))
-	}
-
-	return strings.Join(descriptors, ", ")
+	return fmt.Sprintf("maxValue %d, range: %d -> %d, rounds: %d", s.maxValue, s.startIndex, s.endIndex, s.rounds)
 }
 
 type testResult struct {
-	settings    *testSettings
-	forwardMap  map[uint64]uint64
-	reverseMap  map[uint64]uint64
-	totalRounds uint64
-	err         error
+	settings   *testSettings
+	forwardMap map[uint64]uint64
+	reverseMap map[uint64]uint64
+	err        error
 }
 
 var maxValuesToTest = []uint64{13, 16, 64, 101, 1000, 1024, 50_000}
 var optionsToTest = []testSettings{
 	{
-		minAverageRounds: 4,
-	},
-	{
-		minAverageRounds: 8,
-	},
-	{
-		minAverageRounds: 2,
-	},
-	{
-		minAverageRounds: 1,
-	},
-	{
 		rounds: 1,
+	},
+	{
+		rounds: 2,
+	},
+	{
+		rounds: 3,
+	},
+	{
+		rounds: 4,
+	},
+	{
+		rounds: 5,
+	},
+	{
+		rounds: 6,
 	},
 	{
 		rounds: 8,
@@ -86,11 +80,9 @@ var optionsToTest = []testSettings{
 
 var cachedResults []testResult
 
-func TestMain(m *testing.M) {
-	cachedResults = make([]testResult, len(maxValuesToTest)*len(optionsToTest)*2)
-
+func buildTestSettings() []testSettings {
+	result := make([]testSettings, len(maxValuesToTest)*len(optionsToTest)*2)
 	i := 0
-
 	for _, epochs := range []bool{false, true} {
 		for _, maxValue := range maxValuesToTest {
 			for _, settings := range optionsToTest {
@@ -100,28 +92,33 @@ func TestMain(m *testing.M) {
 				} else {
 					settings.epochs = 1
 				}
-				cachedResults[i] = runTest(settings)
+				result[i] = settings
 				i++
 			}
 		}
 	}
 
+	return result
+}
+
+func TestMain(m *testing.M) {
+	for _, arg := range os.Args {
+		if strings.HasPrefix(arg, "-test.bench") {
+			os.Exit(m.Run())
+		}
+	}
+
+	cachedResults = make([]testResult, len(maxValuesToTest)*len(optionsToTest)*2)
+
+	for i, settings := range buildTestSettings() {
+		cachedResults[i] = runTest(settings)
+	}
+
 	os.Exit(m.Run())
 }
 
-func runTest(s testSettings) testResult {
-	settings := &s
+func createNetwork(settings *testSettings) (*FeistelNetwork, error) {
 	var options []Option
-
-	result := testResult{
-		settings: settings,
-	}
-
-	if settings.minAverageRounds > 0 {
-		options = append(options, WithMinimumAverageRounds(settings.minAverageRounds))
-	} else if settings.rounds > 0 {
-		options = append(options, WithRounds(settings.rounds))
-	}
 
 	if settings.epochs > 1 {
 		options = append(options, WithEpochs())
@@ -132,7 +129,25 @@ func runTest(s testSettings) testResult {
 		settings.endIndex = settings.maxValue
 	}
 
-	net, err := NewNetwork(settings.maxValue, 0, options...)
+	return NewNetwork(settings.maxValue, 0, settings.rounds, options...)
+}
+
+func runTest(s testSettings) testResult {
+	settings := &s
+
+	result := testResult{
+		settings: settings,
+	}
+
+	if settings.epochs > 1 {
+		settings.endIndex = ((settings.maxValue + 1) * settings.epochs) - 1
+	}
+
+	if settings.endIndex == 0 {
+		settings.endIndex = settings.maxValue
+	}
+
+	net, err := createNetwork(settings)
 
 	if err != nil {
 		result.err = err
@@ -159,8 +174,6 @@ func runTest(s testSettings) testResult {
 			return result
 		}
 	}
-
-	result.totalRounds = net.roundCount
 
 	return result
 }
@@ -222,7 +235,11 @@ func TestAverageFixedPoints(t *testing.T) {
 			continue
 		}
 
-		if test.settings.rounds < 3 && test.settings.minAverageRounds < 9 {
+		if test.settings.rounds < minRoundsForRandom {
+			continue
+		}
+
+		if test.settings.epochs > 1 {
 			continue
 		}
 
@@ -277,27 +294,9 @@ func TestFullRangeCovered(t *testing.T) {
 	}
 }
 
-func TestAverage(t *testing.T) {
-	for _, test := range cachedResults {
-		if test.settings.minAverageRounds == 0 {
-			continue
-		}
-		t.Run(test.settings.String(), func(t *testing.T) {
-			avgRounds := test.totalRounds / (uint64(len(test.forwardMap)) * 2)
-			if avgRounds < test.settings.minAverageRounds-1 {
-				t.Errorf("Average Rounds too low, expected >%d received %d, %d values", test.settings.minAverageRounds, avgRounds, len(test.forwardMap))
-			}
-
-			if avgRounds > test.settings.minAverageRounds+3 {
-				t.Errorf("Average Rounds too high, expected <%d+4 received %d, %d values", test.settings.minAverageRounds, avgRounds, len(test.forwardMap))
-			}
-		})
-	}
-}
-
 func TestCycleLengths(t *testing.T) {
 	for _, test := range cachedResults {
-		if (test.settings.rounds < 3 && test.settings.minAverageRounds < 5) || test.settings.endIndex != test.settings.maxValue || test.settings.startIndex != 0 {
+		if (test.settings.rounds < 3) || test.settings.endIndex != test.settings.maxValue || test.settings.startIndex != 0 {
 			continue
 		}
 		t.Run(test.settings.String(), func(t *testing.T) {
@@ -349,7 +348,7 @@ func maxAllowedCycles(n int, z float64) int {
 
 func TestChiSquare(t *testing.T) {
 	for _, test := range cachedResults {
-		if (test.settings.rounds < 3 && test.settings.minAverageRounds < 5) || len(test.forwardMap) < 1000 {
+		if (test.settings.rounds < 3) || len(test.forwardMap) < 1000 {
 			continue
 		}
 		t.Run(test.settings.String(), func(t *testing.T) {
@@ -429,7 +428,7 @@ func TestSerialCorrelationLag1(t *testing.T) {
 			continue
 		}
 
-		if test.settings.rounds < 3 && test.settings.minAverageRounds < 5 {
+		if test.settings.rounds < 5 {
 			continue
 		}
 
@@ -499,7 +498,7 @@ func TestUniqueCombinations(t *testing.T) {
 			continue
 		}
 
-		if test.settings.rounds < 3 && test.settings.minAverageRounds < 5 {
+		if test.settings.rounds < minRoundsForRandom {
 			continue
 		}
 		t.Run(test.settings.String(), func(t *testing.T) {
@@ -543,7 +542,7 @@ func TestUniqueCombinations(t *testing.T) {
 
 func TestSerialEpochCorrelationLag1(t *testing.T) {
 	for _, test := range cachedResults {
-		if test.settings.rounds < 3 && test.settings.minAverageRounds < 5 {
+		if test.settings.rounds < 3 {
 			continue
 		}
 
@@ -587,7 +586,7 @@ func TestSerialEpochCorrelationLag1(t *testing.T) {
 
 func TestEpochDistribution(t *testing.T) {
 	for _, test := range cachedResults {
-		if test.settings.rounds < 3 && test.settings.minAverageRounds < 9 {
+		if test.settings.rounds < minRoundsForRandom {
 			continue
 		}
 
@@ -611,6 +610,29 @@ func TestEpochDistribution(t *testing.T) {
 			}
 
 			chiSquaredTest(t, counts, 0.1)
+		})
+	}
+}
+
+func BenchmarkAllSetting(b *testing.B) {
+	for _, settings := range buildTestSettings() {
+		b.Run(settings.String(), func(b *testing.B) {
+			net, err := createNetwork(&settings)
+
+			if err != nil {
+				b.Fatalf("Unable to create network with error: %v", err)
+			}
+			for i := uint64(0); i < uint64(b.N); i++ {
+				if net.epochs || net.maxValue == ^uint64(0) {
+					_, err = net.Map(i)
+				} else {
+					_, err = net.Map(i % (settings.maxValue + 1))
+				}
+
+				if err != nil {
+					b.Fatalf("Failed mapping with error %v", err)
+				}
+			}
 		})
 	}
 }
