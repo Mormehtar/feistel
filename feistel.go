@@ -98,17 +98,17 @@ func (n *FeistelNetwork) encode(index uint64, invert bool) (uint64, error) {
 		}
 
 		for round := start; round >= 0 && round < n.rounds; round += adjust {
-			seed := n.seeds[round]
+			seed := n.seeds[round] ^ epochHash
 
 			if round%2 == 0 {
-				f := splitmix64(b^epochHash^seed) % n.leftRadix
+				f := splitmix64(b^seed) % n.leftRadix
 				if invert {
 					a = (a + n.leftRadix - f) % n.leftRadix
 				} else {
 					a = (a + f) % n.leftRadix
 				}
 			} else {
-				f := splitmix64(a^epochHash^seed) % n.rightRadix
+				f := splitmix64(a^seed) % n.rightRadix
 				if invert {
 					b = (b + n.rightRadix - f) % n.rightRadix
 				} else {
@@ -136,7 +136,7 @@ func findFactors(maxValue uint64) (uint64, uint64) {
 	}
 
 	value := maxValue + 1
-	sqrt := uint64CeilSqrt(value)
+	sqrt := uint64Sqrt(value)
 
 	var bestValue uint64
 	var bestOther uint64
@@ -150,6 +150,12 @@ func findFactors(maxValue uint64) (uint64, uint64) {
 		other := (value / current) + 1
 		diff := (other * current) - value
 
+		if other > current {
+			diff += other - current
+		} else {
+			diff += current - other
+		}
+
 		if bestValue == 0 || exceeds > diff {
 			exceeds = diff
 			bestOther = other
@@ -160,16 +166,16 @@ func findFactors(maxValue uint64) (uint64, uint64) {
 	return bestValue, bestOther
 }
 
-func uint64CeilSqrt(n uint64) uint64 {
+func uint64Sqrt(n uint64) uint64 {
 	if n < 2 {
 		return n
 	}
 	x := uint64(math.Sqrt(float64(n)))
 
-	for x > 0 && x-1 > n/x {
+	for x > 0 && x > n/x {
 		x--
 	}
-	for x < n/x {
+	for (x + 1) <= n/(x+1) {
 		x++
 	}
 	return x
