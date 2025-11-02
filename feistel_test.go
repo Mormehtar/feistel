@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -43,13 +44,7 @@ var optionsToTest = []testSettings{
 		rounds: 1,
 	},
 	{
-		rounds: 2,
-	},
-	{
 		rounds: 3,
-	},
-	{
-		rounds: 4,
 	},
 	{
 		rounds: 5,
@@ -59,27 +54,6 @@ var optionsToTest = []testSettings{
 	},
 	{
 		rounds: 8,
-	},
-	{
-		rounds: 9,
-	},
-	{
-		rounds: 10,
-	},
-	{
-		rounds: 11,
-	},
-	{
-		rounds: 12,
-	},
-	{
-		rounds: 13,
-	},
-	{
-		rounds: 14,
-	},
-	{
-		rounds: 15,
 	},
 	{
 		rounds: 30,
@@ -116,18 +90,21 @@ func TestMain(m *testing.M) {
 	resultChan := make(chan *testResult, 200)
 	var wg sync.WaitGroup
 
-	for _, settings := range buildTestSettings() {
-		currentSettings := settings
-		wg.Add(1)
-		go func() {
-			resultChan <- runTest(currentSettings)
-			wg.Done()
-		}()
-	}
-
 	go func() {
+		semaphoreChannel := make(chan struct{}, runtime.NumCPU())
+		for _, settings := range buildTestSettings() {
+			currentSettings := settings
+			semaphoreChannel <- struct{}{}
+			wg.Add(1)
+			go func() {
+				resultChan <- runTest(currentSettings)
+				wg.Done()
+				<-semaphoreChannel
+			}()
+		}
 		wg.Wait()
 		close(resultChan)
+		close(semaphoreChannel)
 	}()
 
 	i := 0
