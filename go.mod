@@ -1,4 +1,4 @@
-module github.com/elacy/feistel
+module github.com/mormehtar/feistel
 
 go 1.24.5
 

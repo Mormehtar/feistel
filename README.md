@@ -1,11 +1,12 @@
 # Golang Implementation of the Feistel Network/Cipher
 This library is an implementation of the [Feistel Cipher](https://en.wikipedia.org/wiki/Feistel_cipher) but not intended for cryptography. Think of it more like something that generates random permutations.
+It's a fork for [Elacy implementation](https://github.com/elacy/feistel)
 
 ## How to use it
 
 If you want to create something like [Perm in math/rand](https://pkg.go.dev/math/rand#Perm) you could do this:
 ```
-import "github.com/elacy/feistel"
+import "github.com/mormehtar/feistel"
 
 func feistelPerm(maxValue uint32, seed uint64)([]uint64, error){
     maxValue64 := uint64(maxValue)
@@ -38,7 +39,7 @@ If you wanted to use it to do load balancing you could write something like this
 import (
         "sync/atomic"
 
-        "github.com/elacy/feistel"
+        "github.com/mormehtar/feistel"
 )
 
 func NewLoadBalancer[T any](values []T, seed uint64) (*LoadBalancer[T], error) {
